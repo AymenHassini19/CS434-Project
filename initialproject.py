@@ -82,35 +82,43 @@ def plot_and_save_chart(df, save_path="stock_analysis.html"):
     fig.show()
 
 # ----------------------------
-# 4. PREDICTION FUNCTION
+# 4. PREDICTION FUNCTION (All Columns)
 # ----------------------------
-def get_predictions(df, hours):
-    df_p = df[['Close']].dropna().copy()
-    if df_p.empty:
-        raise ValueError("No valid 'Close' data available for prediction.")
+def get_predictions_all_columns(df, hours):
+    features = ['Close', 'High', 'Low', 'Open', 'Volume']
+    predictions = pd.DataFrame()
     
+    # Index for regression
+    df_p = df[features].dropna().copy()
     df_p['Index'] = np.arange(len(df_p))
-    
-    model = LinearRegression()
-    model.fit(df_p[['Index']], df_p['Close'])
-    
     last_idx = df_p['Index'].iloc[-1]
-    future_idx = np.arange(last_idx + 1, last_idx + 1 + hours).reshape(-1, 1)
-    preds = model.predict(future_idx)
     
     future_dates = [df_p.index[-1] + timedelta(hours=i+1) for i in range(hours)]
-    return pd.DataFrame({'Datetime': future_dates, 'Predicted': preds})
+    predictions['Datetime'] = future_dates
+    
+    for col in features:
+        model = LinearRegression()
+        model.fit(df_p[['Index']], df_p[col])
+        future_idx = np.arange(last_idx + 1, last_idx + 1 + hours).reshape(-1, 1)
+        predictions[col] = model.predict(future_idx)
+    
+    return predictions
 
 # ----------------------------
 # 5. MATPLOTLIB PLOTTING
 # ----------------------------
-def plot_forecast(df, forecast_df, last_n=100):
-    plt.figure(figsize=(12,6))
-    plt.plot(df.index[-last_n:], df['Close'].tail(last_n), label='Actual', marker='o', markersize=2)
-    plt.plot(forecast_df['Datetime'], forecast_df['Predicted'], label='Forecast', linestyle='--', color='orange', marker='x')
+def plot_forecast_all_columns(df, forecast_df, last_n=100):
+    plt.figure(figsize=(14,8))
+    features = ['Close', 'High', 'Low', 'Open', 'Volume']
+    colors = ['blue', 'green', 'red', 'purple', 'orange']
+    
+    for f, c in zip(features, colors):
+        plt.plot(df.index[-last_n:], df[f].tail(last_n), label=f'{f} Actual', marker='o', markersize=2)
+        plt.plot(forecast_df['Datetime'], forecast_df[f], label=f'{f} Forecast', linestyle='--', color=c, marker='x')
+    
     plt.xlabel('Datetime')
-    plt.ylabel('Price')
-    plt.title('NVDA Price Forecast')
+    plt.ylabel('Values')
+    plt.title('NVDA Price & Volume Forecast')
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -133,9 +141,9 @@ def main():
         print("Invalid input! Forecasting 24 hours by default.")
         hours_to_predict = 24
 
-    forecast_df = get_predictions(df, hours_to_predict)
+    forecast_df = get_predictions_all_columns(df, hours_to_predict)
     print(forecast_df)
-    plot_forecast(df, forecast_df)
+    plot_forecast_all_columns(df, forecast_df)
 
 # Run the main function
 if __name__ == "__main__":
