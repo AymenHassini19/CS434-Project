@@ -5,6 +5,7 @@ from plotly.subplots import make_subplots
 from sklearn.linear_model import LinearRegression
 from datetime import timedelta
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import os
 
 # ----------------------------
@@ -20,12 +21,11 @@ def load_nvda_data(file_path):
     
     # Convert datetime
     df['Datetime'] = pd.to_datetime(df['Datetime'], errors='coerce')
-    df = df.dropna(subset=['Datetime'])  # Drop rows with invalid dates
+    df = df.dropna(subset=['Datetime'])
     
     df.set_index('Datetime', inplace=True)
     df = df.sort_index()
     
-    # Ensure numeric columns are numeric
     for col in ['Close', 'High', 'Low', 'Open', 'Volume']:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     
@@ -68,7 +68,6 @@ def plot_and_save_chart(df, save_path="stock_analysis.html"):
         x=df.index, y=df['Volume'], name='Volume', marker_color='grey'
     ), row=2, col=1)
 
-    # Layout
     fig.update_layout(
         title='NVDA Hourly Analysis',
         yaxis_title='Price',
@@ -88,7 +87,6 @@ def get_predictions_all_columns(df, hours):
     features = ['Close', 'High', 'Low', 'Open', 'Volume']
     predictions = pd.DataFrame()
     
-    # Index for regression
     df_p = df[features].dropna().copy()
     df_p['Index'] = np.arange(len(df_p))
     last_idx = df_p['Index'].iloc[-1]
@@ -105,20 +103,27 @@ def get_predictions_all_columns(df, hours):
     return predictions
 
 # ----------------------------
-# 5. MATPLOTLIB PLOTTING
+# 5. MATPLOTLIB PLOTTING (Close Only)
 # ----------------------------
-def plot_forecast_all_columns(df, forecast_df, last_n=100):
-    plt.figure(figsize=(14,8))
-    features = ['Close', 'High', 'Low', 'Open', 'Volume']
-    colors = ['blue', 'green', 'red', 'purple', 'orange']
+def plot_forecast_close(df, forecast_df, last_n=100):
+    plt.figure(figsize=(12,6))
     
-    for f, c in zip(features, colors):
-        plt.plot(df.index[-last_n:], df[f].tail(last_n), label=f'{f} Actual', marker='o', markersize=2)
-        plt.plot(forecast_df['Datetime'], forecast_df[f], label=f'{f} Forecast', linestyle='--', color=c, marker='x')
+    # Last actual Close values
+    actual = df['Close'].tail(last_n)
     
-    plt.xlabel('Datetime')
-    plt.ylabel('Values')
-    plt.title('NVDA Price & Volume Forecast')
+    # Plot actual
+    plt.plot(actual.index, actual.values, label='Actual Close', marker='o', markersize=4)
+    # Plot forecast
+    plt.plot(forecast_df['Datetime'], forecast_df['Close'], label='Forecast Close', linestyle='--', color='orange', marker='x')
+    
+    # Format x-axis for hours
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+    plt.gca().xaxis.set_major_locator(mdates.AutoDateLocator())
+    plt.xticks(rotation=45)
+    
+    plt.xlabel('Datetime (Hourly)')
+    plt.ylabel('Close Price')
+    plt.title('NVDA Close Price Forecast')
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -143,7 +148,9 @@ def main():
 
     forecast_df = get_predictions_all_columns(df, hours_to_predict)
     print(forecast_df)
-    plot_forecast_all_columns(df, forecast_df)
+
+    # Plot only Close price with proper hourly scaling
+    plot_forecast_close(df, forecast_df)
 
 # Run the main function
 if __name__ == "__main__":
