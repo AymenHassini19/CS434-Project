@@ -7,6 +7,7 @@ from datetime import timedelta
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import yfinance as yf
+import pandas_market_calendars as mcal
 import os
 
 # ----------------------------
@@ -19,7 +20,7 @@ def load_nvda_data(file_path):
     df = pd.read_csv(file_path, skiprows=3, header=None)
     df.columns = ['Datetime', 'Close', 'High', 'Low', 'Open', 'Volume']
 
-    df['Datetime'] = pd.to_datetime(df['Datetime'], errors='coerce')
+    df['Datetime'] = pd.to_datetime(df['Datetime'], utc=True, errors='coerce')
     df = df.dropna(subset=['Datetime'])
     df.set_index('Datetime', inplace=True)
     df = df.sort_index()
@@ -39,7 +40,7 @@ def add_moving_averages(df, windows=[20, 50]):
     return df
 
 # ----------------------------
-# 3. INTERACTIVE VISUALIZATION
+# 3. INTERACTIVE CANDLE CHART
 # ----------------------------
 def plot_and_save_chart(df, save_path="stock_analysis.html"):
     fig = make_subplots(
@@ -58,7 +59,7 @@ def plot_and_save_chart(df, save_path="stock_analysis.html"):
         name='NVDA'
     ), row=1, col=1)
 
-    for ma in [col for col in df.columns if 'MA' in col]:
+    for ma in [c for c in df.columns if 'MA' in c]:
         fig.add_trace(go.Scatter(
             x=df.index,
             y=df[ma],
@@ -75,7 +76,6 @@ def plot_and_save_chart(df, save_path="stock_analysis.html"):
 
     fig.update_layout(
         title='NVDA Hourly Analysis',
-        yaxis_title='Price',
         xaxis_rangeslider_visible=False,
         height=800,
         template='plotly_dark'
@@ -85,7 +85,32 @@ def plot_and_save_chart(df, save_path="stock_analysis.html"):
     fig.show()
 
 # ----------------------------
-# 4. PREDICTION FUNCTION
+# 4. TRADING-HOUR GENERATOR
+# ----------------------------
+def get_future_trading_hours(start_time, n_hours):
+    nyse = mcal.get_calendar("NYSE")
+
+    schedule = nyse.schedule(
+        start_date=start_time.date(),
+        end_date=(start_time + timedelta(days=14)).date()
+    )
+
+    trading_hours = []
+
+    for _, row in schedule.iterrows():
+        hours = pd.date_range(
+            start=row["market_open"],
+            end=row["market_close"],
+            freq="1H",
+            tz="UTC"
+        )
+        trading_hours.extend(hours)
+
+    trading_hours = [t for t in trading_hours if t > start_time]
+    return trading_hours[:n_hours]
+
+# ----------------------------
+# 5. PREDICTION FUNCTION
 # ----------------------------
 def get_predictions_all_columns(df, hours):
     features = ['Close', 'High', 'Low', 'Open', 'Volume']
@@ -95,22 +120,25 @@ def get_predictions_all_columns(df, hours):
     df_p['Index'] = np.arange(len(df_p))
     last_idx = df_p['Index'].iloc[-1]
 
-    future_dates = [df_p.index[-1] + timedelta(hours=i + 1) for i in range(hours)]
+    future_dates = get_future_trading_hours(df_p.index[-1], hours)
     predictions['Datetime'] = future_dates
 
     for col in features:
         model = LinearRegression()
         model.fit(df_p[['Index']], df_p[col])
 
-        future_idx = np.arange(last_idx + 1, last_idx + 1 + hours).reshape(-1, 1)
+        future_idx = np.arange(
+            last_idx + 1,
+            last_idx + 1 + len(future_dates)
+        ).reshape(-1, 1)
+
         predictions[col] = model.predict(future_idx)
 
     return predictions
 
 # ----------------------------
-# 5. MATPLOTLIB: REAL vs PREDICTED CLOSE
+# 6. MATPLOTLIB (NON-OVERLAPPING TIME AXIS)
 # ----------------------------
-
 def plot_forecast_close(forecast_df):
     start = forecast_df['Datetime'].min()
     end = forecast_df['Datetime'].max() + timedelta(hours=1)
@@ -121,24 +149,15 @@ def plot_forecast_close(forecast_df):
         end=end,
         interval="1h",
         progress=False
-    )
+    ).dropna()
 
-    if real_df.empty:
-        print("No real data available yet from yfinance.")
-        return
+    real_close = real_df['Close']
+    common = forecast_df['Datetime'].isin(real_close.index)
 
-    # ---- ALIGN DATA ----
-    common_times = forecast_df['Datetime'].isin(real_df.index)
-    aligned_forecast = forecast_df[common_times]
+    forecast_df = forecast_df[common]
+    real_close = real_close.loc[forecast_df['Datetime']]
 
-    if aligned_forecast.empty:
-        print("No overlapping hours between prediction and real data yet.")
-        return
-
-    real_close = real_df.loc[aligned_forecast['Datetime'], 'Close']
-
-    # ---- PLOT ----
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(13, 6))
 
     plt.plot(
         real_close.index,
@@ -148,29 +167,28 @@ def plot_forecast_close(forecast_df):
     )
 
     plt.plot(
-        aligned_forecast['Datetime'],
-        aligned_forecast['Close'],
+        forecast_df['Datetime'],
+        forecast_df['Close'],
         label="Predicted Close",
         linestyle="--",
         marker="x"
     )
 
     ax = plt.gca()
-    ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=6, maxticks=10))
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
 
-    plt.xticks(rotation=45)
-    plt.xlabel("Datetime (Hourly)")
+    plt.xticks(rotation=45, ha="right")
+    plt.xlabel("Datetime (Trading Hours)")
     plt.ylabel("Close Price")
-    plt.title("NVDA Hourly Close Price: Prediction vs Reality (Aligned)")
+    plt.title("NVDA Trading-Hour Close: Prediction vs Reality")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.show()
 
-
 # ----------------------------
-# 6. MAIN
+# 7. MAIN
 # ----------------------------
 def main():
     file_path = 'NVDA_hourly_last_2_years.csv'
@@ -178,14 +196,15 @@ def main():
     df = load_nvda_data(file_path)
     df = add_moving_averages(df)
 
+    # Candlestick chart (unchanged)
     plot_and_save_chart(df)
 
     try:
-        hours_to_predict = int(input("Enter hours to forecast: "))
+        hours_to_predict = int(input("Enter trading hours to forecast: "))
         if hours_to_predict <= 0:
             raise ValueError
     except ValueError:
-        print("Invalid input! Defaulting to 24 hours.")
+        print("Invalid input! Defaulting to 24 trading hours.")
         hours_to_predict = 24
 
     forecast_df = get_predictions_all_columns(df, hours_to_predict)
