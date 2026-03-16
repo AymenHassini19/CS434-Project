@@ -149,7 +149,11 @@ def plot_and_save_chart(df, save_path="stock_analysis.html"):
         template="plotly_dark"
     )
 
-    fig.write_html(save_path)
+    fig.write_html(
+    save_path,
+    include_plotlyjs=True,
+    full_html=True
+)
     fig.show()
 
 # ----------------------------
