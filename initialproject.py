@@ -43,23 +43,41 @@ def add_moving_averages(df, windows=[20, 50]):
 # 3. INTERACTIVE CANDLE CHART
 # ----------------------------
 def plot_and_save_chart(df, save_path="stock_analysis.html"):
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        vertical_spacing=0.03,
-        subplot_titles=('Price & Trends', 'Volume'),
-        row_width=[0.2, 0.7]
+
+    
+    vol_df = df["Volume"].resample("5D").sum()
+
+    
+    daily_dir = (
+        df["Close"].resample("5D").last()
+        >= df["Open"].resample("5D").first() 
     )
 
+    vol_colors = [
+        "rgba(0,255,0,0.7)" if up else "rgba(255,0,0,0.7)"
+        for up in daily_dir
+    ]
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        subplot_titles=("Price & Trends", "Volume"),
+        row_width=[0.2, 0.8]
+    )
+
+    
     fig.add_trace(go.Candlestick(
         x=df.index,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
-        name='NVDA'
+        open=df["Open"],
+        high=df["High"],
+        low=df["Low"],
+        close=df["Close"],
+        name="NVDA"
     ), row=1, col=1)
 
-    for ma in [c for c in df.columns if 'MA' in c]:
+    
+    for ma in [c for c in df.columns if "MA" in c]:
         fig.add_trace(go.Scatter(
             x=df.index,
             y=df[ma],
@@ -67,18 +85,19 @@ def plot_and_save_chart(df, save_path="stock_analysis.html"):
             name=ma
         ), row=1, col=1)
 
+    
     fig.add_trace(go.Bar(
-        x=df.index,
-        y=df['Volume'],
-        name='Volume',
-        marker_color='grey'
+        x=vol_df.index,
+        y=vol_df.values,
+        marker=dict(color=vol_colors),
+        name="Daily Volume"
     ), row=2, col=1)
 
     fig.update_layout(
-        title='NVDA Hourly Analysis',
+        title="NVDA Hourly Analysis",
         xaxis_rangeslider_visible=False,
         height=800,
-        template='plotly_dark'
+        template="plotly_dark"
     )
 
     fig.write_html(save_path)
