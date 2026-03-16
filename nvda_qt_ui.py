@@ -149,26 +149,58 @@ def split_pipeline_and_evaluation(full_text: str):
 
 # ------------------ helper: format text as beautiful HTML for QTextEdit ------------------
 def make_html_block(title: str, body_text: str):
-    """
-    Returns HTML string with a large heading and monospaced, nicely wrapped body.
-    Preserves whitespace and basic formatting.
-    """
-    safe_body = html_escape(body_text)
+
+    import re
+    from html import escape as html_escape
+
+    # ⭐ remove the ===== HEADERS ===== lines
+    body_text = re.sub(r'=+\s*ML\s*PIPELINE\s*=+', '', body_text, flags=re.I)
+    body_text = re.sub(r'=+\s*EVALUATION\s*=+', '', body_text, flags=re.I)
+
+    safe_body = html_escape(body_text.strip())
+
     html = f"""
     <html>
-      <head>
-        <meta charset="utf-8"/>
-      </head>
-      <body style="background-color:#0b1020;color:#e6eef8;font-family:Inter, 'Segoe UI', Roboto, monospace;">
-        <div style="padding:12px;">
-          <h1 style="margin:6px 0 12px 0; font-size:22px; letter-spacing:0.6px; color:#76b900;">{html_escape(title)}</h1>
-          <div style="border-radius:8px; background:#081023; padding:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.6);">
-            <pre style="white-space:pre-wrap; font-family: 'Courier New', monospace; font-size:13px; line-height:1.28; color:#dbe9ff;">{safe_body}</pre>
+      <body style="
+            background-color:white;
+            color:#111;
+            font-family:Segoe UI, Arial;
+            ">
+
+        <div style="padding:20px;">
+
+          <h1 style="
+                font-size:28px;
+                color:#76b900;
+                margin-bottom:15px;
+                ">
+                {html_escape(title)}
+          </h1>
+
+          <div style="
+                background:#f4f6f8;
+                border-radius:10px;
+                padding:20px;
+                box-shadow:0 3px 10px rgba(0,0,0,0.08);
+                ">
+
+            <pre style="
+                    font-size:18px;
+                    line-height:1.6;
+                    font-family:Consolas, monospace;
+                    white-space:pre-wrap;
+                    ">
+{safe_body}
+            </pre>
+
           </div>
+
         </div>
+
       </body>
     </html>
     """
+
     return html
 
 # ------------------ Main UI ------------------
