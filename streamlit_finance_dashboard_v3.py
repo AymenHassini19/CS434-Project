@@ -55,25 +55,48 @@ st.markdown(
             background: #0b1320;
         }
 
-        /* High-contrast sidebar inputs */
-        section[data-testid="stSidebar"] [data-baseweb="select"] > div {
-            background-color: #0f172a !important;
-            border: 1px solid rgba(255,255,255,0.22) !important;
+        /* Dropdowns: force readable dark text in the control and menu */
+        [data-baseweb="select"] > div {
+            background-color: #ffffff !important;
+            border: 1px solid rgba(15,23,42,0.35) !important;
             box-shadow: none !important;
         }
-        section[data-testid="stSidebar"] [data-baseweb="select"] * {
-            color: #f8fafc !important;
+        [data-baseweb="select"],
+        [data-baseweb="select"] * {
+            color: #000000 !important;
         }
-        section[data-testid="stSidebar"] [role="listbox"] {
-            background-color: #0f172a !important;
-            border: 1px solid rgba(255,255,255,0.18) !important;
+        [data-baseweb="select"] span,
+        [data-baseweb="select"] div {
+            color: #000000 !important;
         }
-        section[data-testid="stSidebar"] [role="option"] {
-            background-color: #0f172a !important;
-            color: #f8fafc !important;
+        [data-baseweb="select"] input,
+        [data-baseweb="select"] input::placeholder {
+            color: #000000 !important;
+            -webkit-text-fill-color: #000000 !important;
+            opacity: 1 !important;
         }
-        section[data-testid="stSidebar"] [role="option"]:hover {
-            background-color: #1e293b !important;
+        [data-baseweb="select"] svg {
+            fill: #000000 !important;
+        }
+        [data-baseweb="popover"] [role="listbox"],
+        [role="listbox"] {
+            background-color: #ffffff !important;
+            border: 1px solid rgba(15,23,42,0.18) !important;
+        }
+        [data-baseweb="popover"] [role="option"],
+        [role="option"] {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+        }
+        [data-baseweb="popover"] [role="option"] *,
+        [role="listbox"] *,
+        [role="option"] * {
+            color: #000000 !important;
+        }
+        [data-baseweb="popover"] [role="option"]:hover,
+        [role="option"]:hover {
+            background-color: #e5e7eb !important;
+            color: #000000 !important;
         }
         section[data-testid="stSidebar"] div[data-testid="stFileUploaderDropzone"] {
             background: #0f172a !important;
