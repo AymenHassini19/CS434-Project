@@ -54,6 +54,41 @@ st.markdown(
         section[data-testid="stSidebar"] {
             background: #0b1320;
         }
+
+        /* High-contrast sidebar inputs */
+        section[data-testid="stSidebar"] [data-baseweb="select"] > div {
+            background-color: #0f172a !important;
+            border: 1px solid rgba(255,255,255,0.22) !important;
+            box-shadow: none !important;
+        }
+        section[data-testid="stSidebar"] [data-baseweb="select"] * {
+            color: #f8fafc !important;
+        }
+        section[data-testid="stSidebar"] [role="listbox"] {
+            background-color: #0f172a !important;
+            border: 1px solid rgba(255,255,255,0.18) !important;
+        }
+        section[data-testid="stSidebar"] [role="option"] {
+            background-color: #0f172a !important;
+            color: #f8fafc !important;
+        }
+        section[data-testid="stSidebar"] [role="option"]:hover {
+            background-color: #1e293b !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stFileUploaderDropzone"] {
+            background: #0f172a !important;
+            border: 1px solid rgba(255,255,255,0.22) !important;
+            border-radius: 16px !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stFileUploaderDropzone"] * {
+            color: #f8fafc !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stFileUploaderDropzone"] button {
+            background: #1e293b !important;
+            color: #f8fafc !important;
+            border: 1px solid rgba(255,255,255,0.18) !important;
+        }
+
         .card {
             background: rgba(15,23,42,0.96);
             border: 1px solid rgba(255,255,255,0.12);
@@ -358,8 +393,14 @@ if source == "Upload CSV":
         source_name = uploaded.name
 else:
     ticker = st.sidebar.text_input("Ticker", value="NVDA")
-    period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y"], index=3)
-    interval = st.sidebar.selectbox("Interval", ["1d", "1h", "30m", "15m"], index=0)
+    interval = st.sidebar.selectbox("Interval", ["1h", "1d", "30m", "15m"], index=0)
+
+    if interval == "1h":
+        period = "730d"
+        st.sidebar.caption("Hourly Yahoo Finance data uses the maximum 730-day lookback.")
+    else:
+        period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y"], index=3)
+
     if st.sidebar.button("Load market data"):
         raw_df = fetch_yfinance_data(ticker, period, interval)
         source_name = f"{ticker} ({period}, {interval})"
