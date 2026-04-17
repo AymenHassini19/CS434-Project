@@ -12,7 +12,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
 import pandas_market_calendars as mcal
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.dummy import DummyClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
 
@@ -210,6 +211,9 @@ FEATURE_COLS = [
     "MA20", "MA50", "RSI", "MACD", "MACD_signal", "MACD_hist",
     "ret_1", "ret_3", "ret_6", "lag_1", "lag_2", "lag_3", "lag_6", "lag_12",
     "volatility_12", "volatility_24",
+    "close_vs_ma20", "close_vs_ma50", "ma_gap_20_50",
+    "macd_gap", "rsi_centered", "range_pct", "candle_body_pct",
+    "volume_change", "volume_zscore_20", "trend_strength_12",
 ]
 
 
@@ -222,24 +226,49 @@ def build_features(df: pd.DataFrame):
         df[f"lag_{lag}"] = df["Close"].shift(lag)
     df["volatility_12"] = df["Returns"].rolling(12).std()
     df["volatility_24"] = df["Returns"].rolling(24).std()
+    df["close_vs_ma20"] = (df["Close"] / df["MA20"]) - 1
+    df["close_vs_ma50"] = (df["Close"] / df["MA50"]) - 1
+    df["ma_gap_20_50"] = (df["MA20"] / df["MA50"]) - 1
+    df["macd_gap"] = df["MACD"] - df["MACD_signal"]
+    df["rsi_centered"] = df["RSI"] - 50
+    df["range_pct"] = (df["High"] - df["Low"]) / df["Close"]
+    df["candle_body_pct"] = (df["Close"] - df["Open"]) / df["Open"]
+    df["volume_change"] = df["Volume"].pct_change()
+    df["volume_zscore_20"] = (df["Volume"] - df["Volume"].rolling(20).mean()) / df["Volume"].rolling(20).std()
+    df["trend_strength_12"] = (
+        df["Returns"].rolling(12).mean().abs() / df["Returns"].rolling(12).std()
+    )
     df["target_next_return"] = np.log(df["Close"].shift(-1) / df["Close"])
     df = df.replace([np.inf, -np.inf], np.nan).dropna()
     return df
 
 
 @st.cache_resource(show_spinner=False)
-def train_model(X_train, y_train):
-    model = HistGradientBoostingRegressor(
+def train_models(X_train, y_train):
+    reg_model = HistGradientBoostingRegressor(
         loss="squared_error",
         learning_rate=0.05,
-        max_iter=400,
+        max_iter=500,
         max_depth=5,
-        min_samples_leaf=20,
-        l2_regularization=0.1,
+        min_samples_leaf=16,
+        l2_regularization=0.15,
         random_state=42,
     )
-    model.fit(X_train, y_train)
-    return model
+    direction_target = (y_train > 0).astype(int)
+    cls_model = HistGradientBoostingClassifier(
+        loss="log_loss",
+        learning_rate=0.04,
+        max_iter=350,
+        max_depth=4,
+        min_samples_leaf=16,
+        l2_regularization=0.15,
+        random_state=42,
+    )
+    reg_model.fit(X_train, y_train)
+    if direction_target.nunique() < 2:
+        cls_model = DummyClassifier(strategy="constant", constant=int(direction_target.iloc[0]))
+    cls_model.fit(X_train, direction_target)
+    return reg_model, cls_model
 
 
 def infer_frequency(index: pd.DatetimeIndex):
@@ -263,6 +292,173 @@ def future_index(last_dt, horizon, freq):
     return pd.date_range(start=last_dt, periods=horizon + 1, freq="1D", inclusive="right")
 
 
+def build_trade_backtest(
+    X_frame: pd.DataFrame,
+    y_frame: pd.Series,
+    pred_returns: np.ndarray,
+    prob_up: np.ndarray,
+    return_threshold: float,
+    prob_threshold: float,
+):
+    trade_df = pd.DataFrame(index=X_frame.index.copy())
+    trade_df.index.name = "Datetime"
+    trade_df["Close"] = X_frame["Close"].values
+    trade_df["PredictedLogReturn"] = pred_returns
+    trade_df["ActualLogReturn"] = y_frame.values
+    trade_df["ProbUp"] = prob_up
+    trade_df["PredictedSimpleReturn"] = np.exp(trade_df["PredictedLogReturn"]) - 1
+    trade_df["ActualSimpleReturn"] = np.exp(trade_df["ActualLogReturn"]) - 1
+
+    long_trend = (
+        (X_frame["Close"] >= X_frame["MA20"])
+        & (X_frame["MA20"] >= X_frame["MA50"])
+        & (X_frame["MACD_hist"] >= 0)
+    )
+    short_trend = (
+        (X_frame["Close"] <= X_frame["MA20"])
+        & (X_frame["MA20"] <= X_frame["MA50"])
+        & (X_frame["MACD_hist"] <= 0)
+    )
+    long_signal = (
+        (trade_df["PredictedSimpleReturn"] >= return_threshold)
+        & (trade_df["ProbUp"] >= prob_threshold)
+        & long_trend.values
+    )
+    short_signal = (
+        (trade_df["PredictedSimpleReturn"] <= -return_threshold)
+        & (trade_df["ProbUp"] <= (1 - prob_threshold))
+        & short_trend.values
+    )
+
+    trade_df["Signal"] = np.where(long_signal, "Long", np.where(short_signal, "Short", "Flat"))
+    trade_df["Confidence"] = np.where(
+        trade_df["Signal"] == "Long",
+        trade_df["ProbUp"],
+        np.where(trade_df["Signal"] == "Short", 1 - trade_df["ProbUp"], abs(trade_df["ProbUp"] - 0.5) * 2),
+    )
+    trade_df["DirectionalReturn"] = np.where(
+        trade_df["Signal"] == "Long",
+        trade_df["ActualSimpleReturn"],
+        np.where(trade_df["Signal"] == "Short", -trade_df["ActualSimpleReturn"], 0.0),
+    )
+    trade_df["PredictedNextClose"] = trade_df["Close"] * np.exp(trade_df["PredictedLogReturn"])
+    trade_df["ActualNextClose"] = trade_df["Close"] * np.exp(trade_df["ActualLogReturn"])
+    return trade_df
+
+
+def simulate_trades(trade_df: pd.DataFrame, starting_cash: float, trade_count: int, position_size: float = 1.0):
+    selected = trade_df.loc[trade_df["Signal"] != "Flat"].head(min(trade_count, len(trade_df))).copy()
+    cash = float(starting_cash)
+    history = []
+
+    for trade_number, (dt, row) in enumerate(selected.iterrows(), start=1):
+        cash_before = cash
+        portfolio_return = position_size * float(row["DirectionalReturn"])
+        trade_multiplier = max(0.0, 1 + portfolio_return)
+        cash = cash_before * trade_multiplier
+        history.append(
+            {
+                "Trade": trade_number,
+                "Datetime": pd.to_datetime(dt),
+                "Signal": row["Signal"],
+                "Confidence": float(row["Confidence"]) * 100,
+                "Predicted Return %": float(row["PredictedSimpleReturn"]) * 100,
+                "Actual Return %": float(row["ActualSimpleReturn"]) * 100,
+                "Trade Return %": float(row["DirectionalReturn"]) * 100,
+                "Position Size %": position_size * 100,
+                "Cash Before": cash_before,
+                "Cash After": cash,
+                "Outcome": "Win" if cash > cash_before else "Loss" if cash < cash_before else "Flat",
+            }
+        )
+        if cash <= 0:
+            break
+
+    sim_df = pd.DataFrame(history)
+    if sim_df.empty:
+        summary = {
+            "final_cash": float(starting_cash),
+            "net_profit": 0.0,
+            "total_return_pct": 0.0,
+            "trades_executed": 0,
+            "wins": 0,
+            "losses": 0,
+            "skipped": int((trade_df["Signal"] == "Flat").sum()),
+            "bankrupt": False,
+        }
+        return sim_df, summary
+
+    wins = int((sim_df["Outcome"] == "Win").sum())
+    losses = int((sim_df["Outcome"] == "Loss").sum())
+    final_cash = float(sim_df["Cash After"].iloc[-1])
+    summary = {
+        "final_cash": final_cash,
+        "net_profit": final_cash - float(starting_cash),
+        "total_return_pct": ((final_cash / float(starting_cash)) - 1) * 100 if starting_cash else 0.0,
+        "trades_executed": int(len(sim_df)),
+        "wins": wins,
+        "losses": losses,
+        "skipped": int((trade_df["Signal"] == "Flat").sum()),
+        "bankrupt": final_cash <= 0,
+    }
+    return sim_df, summary
+
+
+def optimize_trading_policy(X_calib: pd.DataFrame, y_calib: pd.Series, pred_calib: np.ndarray, prob_up_calib: np.ndarray):
+    pred_simple = np.exp(pred_calib) - 1
+    pred_abs = pd.Series(np.abs(pred_simple))
+    threshold_candidates = sorted(
+        {
+            0.0,
+            round(float(pred_abs.quantile(0.40)), 6),
+            round(float(pred_abs.quantile(0.55)), 6),
+            round(float(pred_abs.quantile(0.70)), 6),
+            round(float(pred_abs.quantile(0.82)), 6),
+        }
+    )
+    prob_threshold_candidates = [0.50, 0.55, 0.60, 0.65]
+    position_size_candidates = [0.25, 0.40, 0.50, 0.65]
+    min_trades = max(8, min(40, len(X_calib) // 8))
+    best_policy = {
+        "return_threshold": 0.0,
+        "prob_threshold": 0.55,
+        "position_size": 0.40,
+    }
+    best_score = float("-inf")
+
+    for return_threshold in threshold_candidates:
+        for prob_threshold in prob_threshold_candidates:
+            trade_df = build_trade_backtest(
+                X_calib,
+                y_calib,
+                pred_calib,
+                prob_up_calib,
+                return_threshold,
+                prob_threshold,
+            )
+            executed_trades = int((trade_df["Signal"] != "Flat").sum())
+            if executed_trades < min_trades:
+                continue
+
+            for position_size in position_size_candidates:
+                _, summary = simulate_trades(
+                    trade_df,
+                    starting_cash=10000.0,
+                    trade_count=executed_trades,
+                    position_size=position_size,
+                )
+                score = summary["final_cash"] + (summary["wins"] - summary["losses"]) * 10
+                if score > best_score:
+                    best_score = score
+                    best_policy = {
+                        "return_threshold": return_threshold,
+                        "prob_threshold": prob_threshold,
+                        "position_size": position_size,
+                    }
+
+    return best_policy
+
+
 def recursive_forecast(df: pd.DataFrame, horizon: int):
     feat = build_features(df)
     if len(feat) < 60:
@@ -271,15 +467,33 @@ def recursive_forecast(df: pd.DataFrame, horizon: int):
     split = int(len(feat) * 0.8)
     train = feat.iloc[:split]
     test = feat.iloc[split:]
+    calibration_rows = max(20, int(len(train) * 0.2))
+    if len(train) - calibration_rows < 40:
+        calibration_rows = max(10, len(train) // 4)
+    model_train = train.iloc[:-calibration_rows]
+    calibration = train.iloc[-calibration_rows:]
+    if len(model_train) < 40 or len(calibration) < 10:
+        model_train = train
+        calibration = train.tail(max(10, len(train) // 5)).copy()
 
     cols = [c for c in FEATURE_COLS if c in train.columns]
+    X_model_train = model_train[cols]
+    y_model_train = model_train["target_next_return"]
+    X_calib = calibration[cols]
+    y_calib = calibration["target_next_return"]
     X_train = train[cols]
     y_train = train["target_next_return"]
     X_test = test[cols]
     y_test = test["target_next_return"]
 
-    model = train_model(X_train, y_train)
-    pred_test = model.predict(X_test)
+    reg_model, cls_model = train_models(X_model_train, y_model_train)
+    pred_calib = reg_model.predict(X_calib)
+    prob_up_calib = cls_model.predict_proba(X_calib)[:, 1]
+    trade_policy = optimize_trading_policy(X_calib, y_calib, pred_calib, prob_up_calib)
+
+    reg_model, cls_model = train_models(X_train, y_train)
+    pred_test = reg_model.predict(X_test)
+    prob_up_test = cls_model.predict_proba(X_test)[:, 1]
     rmse = float(np.sqrt(mean_squared_error(y_test, pred_test)))
 
     actual_next_close = X_test["Close"].values * np.exp(y_test.values)
@@ -287,6 +501,20 @@ def recursive_forecast(df: pd.DataFrame, horizon: int):
     naive_next_close = X_test["Close"].values
     price_rmse = float(np.sqrt(mean_squared_error(actual_next_close, predicted_next_close)))
     naive_rmse = float(np.sqrt(mean_squared_error(actual_next_close, naive_next_close)))
+    trade_backtest_df = build_trade_backtest(
+        X_test,
+        y_test,
+        pred_test,
+        prob_up_test,
+        trade_policy["return_threshold"],
+        trade_policy["prob_threshold"],
+    )
+    _, test_trade_summary = simulate_trades(
+        trade_backtest_df,
+        starting_cash=10000.0,
+        trade_count=int((trade_backtest_df["Signal"] != "Flat").sum()),
+        position_size=trade_policy["position_size"],
+    )
 
     corr = X_train.copy()
     corr["target"] = y_train.values
@@ -306,6 +534,7 @@ def recursive_forecast(df: pd.DataFrame, horizon: int):
         f"Input rows after cleaning: {len(df):,}",
         f"Rows after feature engineering: {len(feat):,}",
         f"Training rows: {len(train):,}",
+        f"Policy calibration rows: {len(calibration):,}",
         f"Testing rows: {len(test):,}",
         f"Number of features used: {len(cols)}",
         "",
@@ -314,17 +543,17 @@ def recursive_forecast(df: pd.DataFrame, horizon: int):
         "- lagged prices and returns",
         "- rolling volatility",
         "- RSI and MACD technical indicators",
-        "- volume-based features",
+        "- volume-based and trend-strength features",
         "",
-        "Model:",
-        "HistGradientBoostingRegressor(",
-        "    loss='squared_error', learning_rate=0.05, max_iter=400,",
-        "    max_depth=5, min_samples_leaf=20, l2_regularization=0.1,",
-        "    random_state=42",
-        ")",
+        "Models:",
+        "- HistGradientBoostingRegressor for next-period return size",
+        "- HistGradientBoostingClassifier for up/down probability",
         "",
-        "Prediction target:",
-        "Next-hour log return",
+        "Trading policy:",
+        f"- minimum predicted move: {trade_policy['return_threshold'] * 100:.3f}%",
+        f"- minimum directional probability: {trade_policy['prob_threshold']:.2f}",
+        f"- position size per trade: {trade_policy['position_size'] * 100:.0f}%",
+        "- trend filter: only trade when MA/MACD agree with the direction",
     ]
     pipeline_text = "\n".join(pipeline_lines)
 
@@ -335,6 +564,13 @@ def recursive_forecast(df: pd.DataFrame, horizon: int):
         f"Price RMSE: {price_rmse:.4f} $",
         f"Naive RMSE: {naive_rmse:.4f} $",
         f"Improvement vs naive: {naive_rmse - price_rmse:.4f} $",
+        "",
+        "Trading backtest on unseen validation period:",
+        f"Trades taken: {test_trade_summary['trades_executed']}",
+        f"Trades skipped: {test_trade_summary['skipped']}",
+        f"Win / loss count: {test_trade_summary['wins']} / {test_trade_summary['losses']}",
+        f"Ending cash from 10,000 $: {test_trade_summary['final_cash']:.2f} $",
+        f"Backtest return: {test_trade_summary['total_return_pct']:.2f} %",
     ]
     eval_text = "\n".join(eval_lines)
 
@@ -347,7 +583,7 @@ def recursive_forecast(df: pd.DataFrame, horizon: int):
         feat_fc = build_features(df_fc)
         last = feat_fc.iloc[-1]
         X_last = pd.DataFrame([last[cols].values], columns=cols)
-        pred_log_ret = float(model.predict(X_last)[0])
+        pred_log_ret = float(reg_model.predict(X_last)[0])
         last_close = float(df_fc["Close"].iloc[-1])
         pred_close = last_close * np.exp(pred_log_ret)
 
@@ -362,7 +598,7 @@ def recursive_forecast(df: pd.DataFrame, horizon: int):
         forecast_rows.append((pd.to_datetime(dt), pred_close))
 
     forecast_df = pd.DataFrame(forecast_rows, columns=["Datetime", "PredictedClose"]).set_index("Datetime")
-    return model, rmse, forecast_df, feat, cols, pipeline_text, eval_text, feat_df
+    return reg_model, rmse, forecast_df, feat, cols, pipeline_text, eval_text, feat_df, trade_backtest_df, trade_policy
 
 
 def candlestick_figure(df: pd.DataFrame):
@@ -493,8 +729,8 @@ k3.metric("End", str(end_dt.date()))
 k4.metric("Latest Close", f"{latest_close:,.2f}")
 
 # Main tabs
-overview_tab, indicators_tab, forecast_tab, data_tab, pipeline_tab, evaluation_tab, features_tab = st.tabs(
-    ["Overview", "Indicators", "Forecast", "Data", "ML Pipeline", "Evaluation", "Top Features"]
+overview_tab, indicators_tab, forecast_tab, data_tab, pipeline_tab, evaluation_tab, features_tab, trading_tab = st.tabs(
+    ["Overview", "Indicators", "Forecast", "Data", "ML Pipeline", "Evaluation", "Top Features", "Trade Simulation"]
 )
 
 with overview_tab:
@@ -540,7 +776,7 @@ with indicators_tab:
 with forecast_tab:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     try:
-        model, rmse, forecast_df, feat_df, used_cols, pipeline_text, eval_text, top_features_df = recursive_forecast(
+        model, rmse, forecast_df, feat_df, used_cols, pipeline_text, eval_text, top_features_df, trade_backtest_df, trade_policy = recursive_forecast(
             df[["Open", "High", "Low", "Close", "Volume"]].copy(), horizon
         )
         c1, c2, c3 = st.columns(3)
@@ -604,6 +840,55 @@ with features_tab:
         st.plotly_chart(feat_fig, use_container_width=True)
     except NameError:
         st.write("Run the forecast tab first to generate top feature importance.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with trading_tab:
+    st.markdown('<div class="output-card">', unsafe_allow_html=True)
+    try:
+        eligible_trades = int((trade_backtest_df["Signal"] != "Flat").sum())
+        if eligible_trades == 0:
+            st.warning("The optimized strategy skipped every validation-period setup, so there are no trades to simulate.")
+        else:
+            max_trades = eligible_trades
+            default_trades = min(25, max_trades)
+            c1, c2 = st.columns(2)
+            with c1:
+                starting_cash = st.number_input("Starting cash ($)", min_value=100.0, value=10000.0, step=500.0)
+            with c2:
+                trade_count = st.slider("Number of trades to simulate", 1, max_trades, default_trades)
+
+            st.caption(
+                f"Simulation uses the optimized policy from the training data: minimum predicted move "
+                f"{trade_policy['return_threshold'] * 100:.3f}%, minimum direction probability "
+                f"{trade_policy['prob_threshold']:.2f}, and {trade_policy['position_size'] * 100:.0f}% of capital per trade."
+            )
+
+            sim_df, sim_summary = simulate_trades(
+                trade_backtest_df,
+                starting_cash,
+                trade_count,
+                position_size=trade_policy["position_size"],
+            )
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Final cash", f"${sim_summary['final_cash']:,.2f}", delta=f"${sim_summary['net_profit']:,.2f}")
+            m2.metric("Total return", f"{sim_summary['total_return_pct']:.2f}%")
+            m3.metric("Trades / Wins", f"{sim_summary['trades_executed']} / {sim_summary['wins']}")
+            m4.metric("Fell to zero", "Yes" if sim_summary["bankrupt"] else "No")
+
+            sim_fig = go.Figure()
+            sim_fig.add_trace(go.Scatter(x=sim_df["Datetime"], y=sim_df["Cash After"], mode="lines+markers", name="Portfolio Value"))
+            sim_fig.update_layout(
+                template="plotly_dark",
+                height=420,
+                margin=dict(l=10, r=10, t=50, b=10),
+                title="Simulated Portfolio Value Across Validation Trades",
+                xaxis_title="Trade Date / Time",
+                yaxis_title="Portfolio Value ($)",
+            )
+            st.plotly_chart(sim_fig, use_container_width=True)
+            st.dataframe(sim_df, use_container_width=True)
+    except NameError:
+        st.write("Run the forecast tab first to generate the trade simulation.")
     st.markdown('</div>', unsafe_allow_html=True)
 st.divider()
 st.subheader("Summary statistics for the loaded dataset")
